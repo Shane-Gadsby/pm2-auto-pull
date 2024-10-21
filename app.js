@@ -19,7 +19,7 @@ async function fetchLatestVersion() {
         // Fetch all processes.
         pm2.list((error, allProcesses) => {
             if (error) {
-                console.error("[pm2-auto-pull]: Error whilst fetching process list!", error);
+                console.error("[auto-pull]: Error whilst fetching process list!", error);
                 IS_FETCHING = false;
                 return reject(error);
             }
@@ -68,7 +68,7 @@ async function fetchLatestVersion() {
  */
 function log(message, force = false) {
     if (!force && !io.getConfig()?.logging) return;
-    return console.log("[pm2-auto-pull]:", message);
+    return console.log("[auto-pull]:", message);
 }
 
 // pm2 module configuration and initialization.
@@ -79,7 +79,7 @@ io.init({
         ["Verbose Logging", io.getConfig()?.logging ? "Enabled" : "Disabled"]
     ]
 }).initModule({}, (error) => {
-    if (error) return console.error("[pm2-auto-pull]: Failed to initialize module!", error);
+    if (error) return console.error("[auto-pull]: Failed to initialize module!", error);
 
     // Parse interval value.
     let FETCH_INTERVAL = parseInt(io.getConfig()?.interval); // How often to check for updates (in ms)
