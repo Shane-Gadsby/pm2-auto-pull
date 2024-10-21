@@ -1,6 +1,8 @@
 const io = require("@pm2/io");
 const pm2 = require("pm2");
+const fs = require("fs");
 const async = require("async");
+var exec = require('child_process').exec
 
 let IS_FETCHING = false; // Whether we are currently fetching the latest version for all processes.
 let LAST_CHECK = false; // The last time we checked for updates.
@@ -16,45 +18,68 @@ async function fetchLatestVersion() {
     LAST_CHECK = Date.now();
 
     return new Promise(async (resolve, reject) => {
+
+        console.log(pm2.reload)
         // Fetch all processes.
         pm2.list((error, allProcesses) => {
-            if (error) {
-                console.error("[auto-pull]: Error whilst fetching process list!", error);
-                IS_FETCHING = false;
-                return reject(error);
-            }
 
-            // Keep track of each process we check and their outcome.
-            let fetchStats = {checked: [], updated: [], skipped: []}
+            //Interate over them all
+            allProcesses.forEach(async process => {
 
-            // Iterate through all processes and pull latest version.
-            async.forEachLimit(allProcesses, 1, (process, next) => {
-                fetchStats.checked.push(process.name);
+                //Are they up, have a git repo, not a module, and not using stash?
+                if (process.pm2_env.status === 'online' && process.pm2_env.versioning && !process.pm2_env.axm_options?.isModule && process.pm2_env.versioning.url.indexOf('stash.usq') === -1 && process.name.indexOf('auto-pull') === -1) {
 
-                if (
-                    !process?.pm2_env || // Skip if no pm2_env available.
-                    process?.pm2_env != "online" || // Or if the process is not online.
-                    !process.pm2_env?.versioning // Or if the process has no configured version control.
-                ) {
-                    console.log(!process?.pm2_env, process?.pm2_env != "online", !process.pm2_env?.versioning)
-                    fetchStats.skipped.push(process.name);
-                    return next();
+                    //Pull and reload them process
+                    pm2.pullAndReload(process.name, (error, metadata) => {
+
+
+                        //Got an error that wasn't that it was already up tom date?
+                        if (!!error && error?.msg !== "Already up to date") {
+
+                            //Log it
+                            console.trace(`Error fetching updates for process: ${process.name}`, error);
+                        }
+
+                        //No errors, or the error was just that it was up to date already
+                        else {
+
+                            //Was it not to date?
+                            if (error?.msg !== "Already up to date") {
+
+                                //Log it
+                                console.log(`Updates fetched for: ${process.name}`);
+                                exec('npm install', (error, stdout, stderr) => {
+                                    pm2.restart(process.name, () => {});
+                                }, {cwd: process.pm2_env.versioning.repo_path});
+                            }
+
+                            //Was it up to date?
+                            else {
+
+                                //Log it
+                                console.log(`Already up to date: ${process.name}`);
+                            }
+                        }
+
+                    });
+
                 }
 
-                log(`Checking updates for ${process.name}..`);
-                pm2.pullAndReload(process.name, (error, metadata) => {
-                    if (error) return next(error); // Already up to date.
+                //Didn't match the above, but WAS a stash url?
+                else if (process.pm2_env?.versioning?.url.indexOf('stash.usq') > -1) {
 
-                    if (metadata) log(`Successfully pulled latest version for '${process.name}'!`, true);
-                    fetchStats.updated.push(process.name);
-                    return next();
-                });
-            }, () => {
-                // All processes have been checked.
-                IS_FETCHING = false;
-                log(fetchStats);
-                return resolve(fetchStats);
-            });
+                    //Log that we're skipping it
+                    console.log(`[Skipping] Process using defuct repo: ${process.name} (${process.pm2_env.versioning.url})`);
+                }
+
+                //Catch the rest
+                else {
+
+                    //Log that we're skipping it
+                    console.log(`[Skipping] Process not considererd: ${process.name}`);
+                }
+            })
+
         });
     });
 }
@@ -74,7 +99,7 @@ function log(message, force = false) {
 // pm2 module configuration and initialization.
 io.init({
     human_info: [
-        ["Update Check Interval", `${io.getConfig()?.interval || 30000}ms`],
+        ["Update Check Interval", `${io.getConfig()?.interval || 15000}ms`],
         ["Last Check", (LAST_CHECK ? new Date(LAST_CHECK).toLocaleString() : "Never")],
         ["Verbose Logging", io.getConfig()?.logging ? "Enabled" : "Disabled"]
     ]
@@ -83,23 +108,10 @@ io.init({
 
     // Parse interval value.
     let FETCH_INTERVAL = parseInt(io.getConfig()?.interval); // How often to check for updates (in ms)
-    if (!FETCH_INTERVAL || FETCH_INTERVAL < 1000) FETCH_INTERVAL = 30000; // Fallback to default if invalid value provided.
+    if (!FETCH_INTERVAL || FETCH_INTERVAL < 1000) FETCH_INTERVAL = 15000; // Fallback to default if invalid value provided.
 
     pm2.connect(() => {
         setInterval(fetchLatestVersion, FETCH_INTERVAL); // Start fetching latest version every interval.
         log(`Connected to pm2 instance and now updating git every ${FETCH_INTERVAL}ms!`, true);
     });
-});
-
-// Expose pm2 action to manually trigger update check.
-io.action("fetch updates", async (callback) => {
-    console.log("[Fetch Updates] Manually fetching updates..");
-    const fetchStats = await fetchLatestVersion().catch(() => {
-        return callback({status: "error"});
-    });
-
-    // Prepare callback message, we only want to include stats in the response if logging is disabled to avoid duplicate output.
-    let callbackMessage = {status: "success"}
-    if (!io.getConfig()?.logging) callbackMessage = {...callbackMessage, ...fetchStats};
-    return callback(callbackMessage);
 });

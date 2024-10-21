@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="WebServers">
+    <option name="servers">
+      <webServer id="1f837400-f02a-4ddb-b06e-15ab637f08e0" name="Test">
+        <fileTransfer rootFolder="/opt/dlc-auto-pull" accessType="SFTP" host="lmslti-tst-t1.usq.edu.au" port="22" sshConfigId="0464911b-35be-4013-a069-d2ba55c6c06f" sshConfig="[TEST] LTI">
+          <advancedOptions>
+            <advancedOptions dataProtectionLevel="Private" passiveMode="true" shareSSLContext="true" isUseSudo="true" />
+          </advancedOptions>
+        </fileTransfer>
+      </webServer>
+    </option>
+  </component>
+</project>
