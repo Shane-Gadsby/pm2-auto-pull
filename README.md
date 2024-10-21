@@ -16,14 +16,14 @@ A simple and efficient [PM2](https://pm2.keymetrics.io) module that automaticall
 # Installation & Setup
 1. Install the module via `pm2`:
 	```bash
-	pm2 install @imskully/pm2-auto-pull
+	pm2 install @Shane-Gadsby/pm2-auto-pull
 	```
 	> [!IMPORTANT]  
 	> Use `pm2 install`, not `npm install`!
 
 2. *(Optional)* The default fetch interval is 30 seconds, configure the update interval with the following command:
 	```bash
-	pm2 set @imskully@pm2-auto-pull:interval <ms>
+	pm2 set @Shane-Gadsby@pm2-auto-pull:interval <ms>
 	```
 
 3. The module should restart and begin fetching on the configured interval!
@@ -37,22 +37,22 @@ Once the module is installed and configured, it will automatically begin checkin
 
 You can optionally enable verbose logging to see when an interval check is run along with an output of all processes that were checked, skipped, and updated:
 ```bash
-pm2 set @imskully/pm2-auto-pull:logging true
+pm2 set @Shane-Gadsby/pm2-auto-pull:logging true
 ```
 
 At any time, you can view when the last update check has run and other configured settings with:
 ```bash
-pm2 show @imskully/pm2-auto-pull
+pm2 show @Shane-Gadsby/pm2-auto-pull
 ```
 
 # Uninstalling
 To uninstall the module, simply run:
 ```bash
-pm2 uninstall @imskully/pm2-auto-pull
+pm2 uninstall @Shane-Gadsby/pm2-auto-pull
 ```
 
 This will remove the module from your PM2 configuration and stop it from running, you may also want to remove any configuration variables that were set:
 ```bash
-pm2 unset @imskully/pm2-auto-pull:interval
-pm2 unset @imskully/pm2-auto-pull:logging
+pm2 unset @Shane-Gadsby/pm2-auto-pull:interval
+pm2 unset @Shane-Gadsby/pm2-auto-pull:logging
 ```
