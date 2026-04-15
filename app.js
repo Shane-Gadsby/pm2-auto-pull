@@ -49,7 +49,7 @@ async function fetchLatestVersion() {
 								console.log(`Updates fetched for: ${process.name}`);
 								exec('npm install', (error, stdout, stderr) => {
 									pm2.restart(process.name, () => {
-										exec(`chmod -R 666 "${process.pm2_env.versioning.repo_path}"`, (error, stdout, stderr) => {
+										exec(`chmod -R 777 "${process.pm2_env.versioning.repo_path}"`, (error, stdout, stderr) => {
 											pm2.restart(process.name, () => {
 											});
 										}, {cwd: process.pm2_env.versioning.repo_path});
