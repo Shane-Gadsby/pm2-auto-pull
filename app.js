@@ -21,11 +21,10 @@ async function fetchLatestVersion() {
 
 	return new Promise(async (resolve, reject) => {
 
-		console.log(pm2.reload)
 		// Fetch all processes.
 		pm2.list((error, allProcesses) => {
 
-			//Interate over them all
+			//Iterate over them all
 			allProcesses.forEach(async process => {
 
 				//Are they up, have a git repo, not a module, and not using stash?
@@ -48,10 +47,14 @@ async function fetchLatestVersion() {
 							//Was it not up to date?
 							if (error?.msg !== "Already up to date") {
 								console.log(`Updates fetched for: ${process.name}`);
-								exec('npm install', {cwd: process.pm2_env.versioning.repo_path}, (error, stdout, stderr) => {
+								exec('npm install', (error, stdout, stderr) => {
 									pm2.restart(process.name, () => {
+										exec(`chmod -R 666 "${process.pm2_env.versioning.repo_path}"`, (error, stdout, stderr) => {
+											pm2.restart(process.name, () => {
+											});
+										}, {cwd: process.pm2_env.versioning.repo_path});
 									});
-								});
+								}, {cwd: process.pm2_env.versioning.repo_path});
 							}
 
 							//Was it up to date?
