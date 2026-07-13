@@ -28,7 +28,7 @@ async function fetchLatestVersion() {
 			allProcesses.forEach(async process => {
 
 				//Are they up, have a git repo, not a module, and not using stash?
-				if (process.pm2_env.status === 'online' && process.pm2_env.versioning && !process.pm2_env.axm_options?.isModule && process.pm2_env.versioning.url.indexOf('stash.usq') === -1 && process.name.indexOf('auto-pull') === -1) {
+				if (process.pm2_env.status === 'online' && !!process.pm2_env.versioning && !process.pm2_env.versioning?.url?.includes('stash.usq') && !process.pm2_env.versioning?.url?.includes('stash.usq') && !process.pm2_env.axm_options?.isModule && !process.name.includes('auto-pull')) {
 
 					//Pull and reload them process
 					pm2.pullAndReload(process.name, (error, metadata) => {
