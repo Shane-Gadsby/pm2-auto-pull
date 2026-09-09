@@ -1,7 +1,7 @@
 const io = require("@pm2/io");
 const pm2 = require("pm2");
 const fs = require("fs");
-const async = require("async");
+const path = require("path");
 var exec = require('child_process').exec
 
 let IS_FETCHING = false; // Whether we are currently fetching the latest version for all processes.
@@ -16,74 +16,141 @@ async function fetchLatestVersion() {
 		return;
 	} // Already fetching, skip.
 
+	IS_FETCHING = true;
 	log("Fetching latest version for all processes..");
 	LAST_CHECK = Date.now();
 
-	return new Promise(async (resolve, reject) => {
+	try {
+		//Fetch all processes.
+		const allProcesses = await new Promise((resolve, reject) => {
+			pm2.list((error, list) => {
+				if (error) {
+					return reject(error);
+				}
+				resolve(list);
+			});
+		});
 
-		// Fetch all processes.
-		pm2.list((error, allProcesses) => {
+		//Handle them all, in parallel, and actually wait for them this time
+		await Promise.all(allProcesses.map(handleProcess));
+	}
 
-			//Iterate over them all
-			allProcesses.forEach(async process => {
+	catch (error) {
+		console.trace("[auto-pull]: Error fetching process list!", error);
+	}
 
-				//Are they up, have a git repo, not a module, and not using stash?
-				if (process.pm2_env.status === 'online' && !!process.pm2_env.versioning && !process.pm2_env.versioning?.url?.includes('stash.usq') && !process.pm2_env.versioning?.url?.includes('stash.usq') && !process.pm2_env.axm_options?.isModule && !process.name.includes('auto-pull')) {
+	finally {
+		IS_FETCHING = false;
+	}
+}
 
-					//Pull and reload them process
-					pm2.pullAndReload(process.name, (error, metadata) => {
+/**
+ * handleProcess(process)
+ * Works out if a single pm2 process is something we should pull, and does it if so.
+ * Doesn't trust pm2's own pm2_env.versioning for this, it's only populated once at
+ * process start and goes stale the moment the checkout on disk changes underneath it,
+ * so we check the actual .git folder and remote ourselves instead.
+ *
+ * @param {Object} process    A single process entry from pm2.list().
+ */
+async function handleProcess(process) {
+	const name = process.name;
+	const cwd = process.pm2_env?.pm_cwd || process.pm2_env?.cwd;
 
+	//Not online, is us, or is a pm2 module rather than one of our apps?
+	if (process.pm2_env?.status !== 'online' || name.includes('auto-pull') || process.pm2_env?.axm_options?.isModule) {
+		console.log(`[Skipping] Process not considererd: ${name}`);
+		return;
+	}
 
-						//Got an error that wasn't that it was already up tom date?
-						if (!!error && error?.msg !== "Already up to date") {
+	if (!cwd) {
+		console.log(`[Skipping] Process has no known working directory: ${name}`);
+		return;
+	}
 
-							//Log it
-							console.trace(`Error fetching updates for process: ${process.name}`, error);
+	//Does it even have a git repo checked out where it's running from?
+	const remoteUrl = await getGitRemote(cwd);
+	if (!remoteUrl) {
+		console.log(`[Skipping] Process has no git repo checked out: ${name} (${cwd})`);
+		return;
+	}
+
+	//Still pointed at the defunct stash instance?
+	if (remoteUrl.includes('stash.usq')) {
+		console.log(`[Skipping] Process using defuct repo: ${name} (${remoteUrl})`);
+		return;
+	}
+
+	await pullAndReload(name, cwd);
+}
+
+/**
+ * getGitRemote(cwd)
+ * Reads the origin remote straight from git rather than relying on pm2's cached
+ * versioning info, resolves null if there's no repo there at all.
+ *
+ * @param {String} cwd    The directory to check.
+ */
+function getGitRemote(cwd) {
+	return new Promise(resolve => {
+		if (!fs.existsSync(path.join(cwd, '.git'))) {
+			return resolve(null);
+		}
+
+		exec('git config --get remote.origin.url', {cwd}, (error, stdout) => {
+			resolve(error ? null : stdout.trim());
+		});
+	});
+}
+
+/**
+ * pullAndReload(name, cwd)
+ * Fetches and hard-resets a process's repo to its remote HEAD, and if that actually
+ * changed anything, npm installs and restarts it (twice, with a chmod between, so
+ * the fixed-up permissions are in place before the process comes back up properly).
+ *
+ * @param {String} name    The pm2 process name.
+ * @param {String} cwd     The repo's working directory.
+ */
+function pullAndReload(name, cwd) {
+	return new Promise(resolve => {
+		exec('git rev-parse HEAD', {cwd}, (error, beforeRev) => {
+			exec('git fetch origin', {cwd}, (fetchError) => {
+
+				//Got an error that wasn't that it was already up to date?
+				if (!!fetchError) {
+					console.trace(`Error fetching updates for process: ${name}`, fetchError);
+					return resolve();
+				}
+
+				exec('git reset --hard @{u}', {cwd}, (resetError) => {
+					if (!!resetError) {
+						console.trace(`Error resetting process: ${name}`, resetError);
+						return resolve();
+					}
+
+					exec('git rev-parse HEAD', {cwd}, (error2, afterRev) => {
+
+						//Was it up to date already?
+						if (beforeRev?.trim() === afterRev?.trim()) {
+							console.log(`Already up to date: ${name}`);
+							return resolve();
 						}
 
-						//No errors, or the error was just that it was up to date already
-						else {
-
-							//Was it not up to date?
-							if (error?.msg !== "Already up to date") {
-								console.log(`Updates fetched for: ${process.name}`);
-								exec('npm install', (error, stdout, stderr) => {
-									pm2.restart(process.name, () => {
-										exec(`chmod -R 777 "${process.pm2_env.versioning.repo_path}"`, (error, stdout, stderr) => {
-											pm2.restart(process.name, () => {
-											});
-										}, {cwd: process.pm2_env.versioning.repo_path});
-									});
-								}, {cwd: process.pm2_env.versioning.repo_path});
+						//Wasn't up to date, npm install then fix permissions before bringing it back up
+						console.log(`Updates fetched for: ${name}`);
+						exec('npm install', {cwd}, (npmError) => {
+							if (!!npmError) {
+								console.trace(`Error running npm install for process: ${name}`, npmError);
 							}
 
-							//Was it up to date?
-							else {
-
-								//Log it
-								console.log(`Already up to date: ${process.name}`);
-							}
-						}
-
+							exec(`chmod -R 777 "${cwd}"`, {cwd}, () => {
+								pm2.restart(name, () => resolve());
+							});
+						});
 					});
-
-				}
-
-				//Didn't match the above, but WAS a stash url?
-				else if (process.pm2_env?.versioning?.url.indexOf('stash.usq') > -1) {
-
-					//Log that we're skipping it
-					console.log(`[Skipping] Process using defuct repo: ${process.name} (${process.pm2_env.versioning.url})`);
-				}
-
-				//Catch the rest
-				else {
-
-					//Log that we're skipping it
-					console.log(`[Skipping] Process not considererd: ${process.name}`);
-				}
-			})
-
+				});
+			});
 		});
 	});
 }

@@ -21,9 +21,9 @@ A simple and efficient [PM2](https://pm2.keymetrics.io) module that automaticall
 	> [!IMPORTANT]  
 	> Use `pm2 install`, not `npm install`!
 
-2. *(Optional)* The default fetch interval is 30 seconds, configure the update interval with the following command:
+2. *(Optional)* The default fetch interval is 15 seconds, configure the update interval with the following command:
 	```bash
-	pm2 set @Shane-Gadsby@pm2-auto-pull:interval <ms>
+	pm2 set @Shane-Gadsby/pm2-auto-pull:interval <ms>
 	```
 
 3. The module should restart and begin fetching on the configured interval!
