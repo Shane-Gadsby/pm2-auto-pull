@@ -31,8 +31,15 @@ async function fetchLatestVersion() {
 			});
 		});
 
-		//Handle them all, in parallel, and actually wait for them this time
-		await Promise.all(allProcesses.map(handleProcess));
+		//We're a module too, and a git checkout ourselves, so we do want to be checked,
+		//just not alongside everyone else, restarting mid Promise.all would take the
+		//whole event loop (and everyone else's pending pulls) down with us
+		const isSelf = process => process.name.includes('auto-pull');
+		const others = allProcesses.filter(process => !isSelf(process));
+		const self = allProcesses.filter(isSelf);
+
+		await Promise.all(others.map(handleProcess));
+		await Promise.all(self.map(handleProcess));
 	}
 
 	catch (error) {
@@ -62,8 +69,9 @@ async function handleProcess(process) {
 	const execPath = process.pm2_env?.pm_exec_path;
 	const cwd = (execPath && path.dirname(execPath)) || process.pm2_env?.pm_cwd || process.pm2_env?.cwd;
 
-	//Not online, is us, or is a pm2 module rather than one of our apps?
-	if (process.pm2_env?.status !== 'online' || name.includes('auto-pull') || process.pm2_env?.axm_options?.isModule) {
+	//Not online, or some other pm2 module (npm-installed, not a git checkout) that isn't us?
+	const isModule = process.pm2_env?.axm_options?.isModule && !name.includes('auto-pull');
+	if (process.pm2_env?.status !== 'online' || isModule) {
 		console.log(`[Skipping] Process not considererd: ${name}`);
 		return;
 	}
