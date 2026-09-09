@@ -55,7 +55,12 @@ async function fetchLatestVersion() {
  */
 async function handleProcess(process) {
 	const name = process.name;
-	const cwd = process.pm2_env?.pm_cwd || process.pm2_env?.cwd;
+
+	//pm_cwd/cwd just reflects whatever directory pm2 start was run from, which isn't
+	//always the app's own folder, pm_exec_path is the actual script pm2 runs so its
+	//dirname is the one we can trust to be inside the real repo
+	const execPath = process.pm2_env?.pm_exec_path;
+	const cwd = (execPath && path.dirname(execPath)) || process.pm2_env?.pm_cwd || process.pm2_env?.cwd;
 
 	//Not online, is us, or is a pm2 module rather than one of our apps?
 	if (process.pm2_env?.status !== 'online' || name.includes('auto-pull') || process.pm2_env?.axm_options?.isModule) {
