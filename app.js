@@ -7,6 +7,12 @@ var exec = require('child_process').exec
 let IS_FETCHING = false; // Whether we are currently fetching the latest version for all processes.
 let LAST_CHECK = false; // The last time we checked for updates.
 
+// The shared library folder every app pulls in as require('../suite-libs/...'), so it sits beside
+// their checkouts instead of being an npm dependency. pm2 has nothing useful to restart for it,
+// but a change in it changes code every app has already loaded into memory, so they all have to
+// come back up or the commit is on disk and doing nothing.
+const SHARED_LIBS = "suite-libs";
+
 /**
  * fetchLatestVersion()
  * Fetches the latest git version for all connected pm2 processes.
@@ -38,7 +44,11 @@ async function fetchLatestVersion() {
 		const others = allProcesses.filter(process => !isSelf(process));
 		const self = allProcesses.filter(isSelf);
 
-		await Promise.all(others.map(handleProcess));
+		const handled = (await Promise.all(others.map(handleProcess))).filter(Boolean);
+
+		//Before we look at ourselves, since restarting us ends the cycle
+		await handleSharedLibs(handled);
+
 		await Promise.all(self.map(handleProcess));
 	}
 
@@ -58,6 +68,10 @@ async function fetchLatestVersion() {
  * process start and goes stale the moment the checkout on disk changes underneath it,
  * so we check the actual .git folder and remote ourselves instead.
  *
+ * Resolves a descriptor of what it found so the caller can work out which repos are
+ * checked out on this box and which of them just came back up, or null for anything
+ * we skipped.
+ *
  * @param {Object} process    A single process entry from pm2.list().
  */
 async function handleProcess(process) {
@@ -73,28 +87,30 @@ async function handleProcess(process) {
 	const isModule = process.pm2_env?.axm_options?.isModule && !name.includes('auto-pull');
 	if (process.pm2_env?.status !== 'online' || isModule) {
 		console.log(`[Skipping] Process not considererd: ${name}`);
-		return;
+		return null;
 	}
 
 	if (!cwd) {
 		console.log(`[Skipping] Process has no known working directory: ${name}`);
-		return;
+		return null;
 	}
 
 	//Does it even have a git repo checked out where it's running from?
 	const remoteUrl = await getGitRemote(cwd);
 	if (!remoteUrl) {
 		console.log(`[Skipping] Process has no git repo checked out: ${name} (${cwd})`);
-		return;
+		return null;
 	}
 
 	//Still pointed at the defunct stash instance?
 	if (remoteUrl.includes('stash.usq')) {
 		console.log(`[Skipping] Process using defuct repo: ${name} (${remoteUrl})`);
-		return;
+		return null;
 	}
 
-	await pullAndReload(name, cwd);
+	const updated = await pullAndReload(name, cwd);
+
+	return {name, cwd, updated};
 }
 
 /**
@@ -117,55 +133,137 @@ function getGitRemote(cwd) {
 }
 
 /**
- * pullAndReload(name, cwd)
- * Fetches and hard-resets a process's repo to its remote HEAD, and if that actually
- * changed anything, npm installs and restarts it (twice, with a chmod between, so
- * the fixed-up permissions are in place before the process comes back up properly).
+ * pullRepo(label, cwd)
+ * Fetches and hard-resets a repo to its remote HEAD, and resolves whether that actually
+ * moved it. Doesn't care what, if anything, is running out of the folder.
  *
- * @param {String} name    The pm2 process name.
- * @param {String} cwd     The repo's working directory.
+ * @param {String} label    What to call this repo in the logs.
+ * @param {String} cwd      The repo's working directory.
  */
-function pullAndReload(name, cwd) {
+function pullRepo(label, cwd) {
 	return new Promise(resolve => {
 		exec('git rev-parse HEAD', {cwd}, (error, beforeRev) => {
 			exec('git fetch origin', {cwd}, (fetchError) => {
 
 				//Got an error that wasn't that it was already up to date?
 				if (!!fetchError) {
-					console.trace(`Error fetching updates for process: ${name}`, fetchError);
-					return resolve();
+					console.trace(`Error fetching updates for process: ${label}`, fetchError);
+					return resolve(false);
 				}
 
 				exec('git reset --hard @{u}', {cwd}, (resetError) => {
 					if (!!resetError) {
-						console.trace(`Error resetting process: ${name}`, resetError);
-						return resolve();
+						console.trace(`Error resetting process: ${label}`, resetError);
+						return resolve(false);
 					}
 
 					exec('git rev-parse HEAD', {cwd}, (error2, afterRev) => {
 
 						//Was it up to date already?
 						if (beforeRev?.trim() === afterRev?.trim()) {
-							console.log(`Already up to date: ${name}`);
-							return resolve();
+							console.log(`Already up to date: ${label}`);
+							return resolve(false);
 						}
 
-						//Wasn't up to date, npm install then fix permissions before bringing it back up
-						console.log(`Updates fetched for: ${name}`);
-						exec('npm install', {cwd}, (npmError) => {
-							if (!!npmError) {
-								console.trace(`Error running npm install for process: ${name}`, npmError);
-							}
-
-							exec(`chmod -R 777 "${cwd}"`, {cwd}, () => {
-								pm2.restart(name, () => resolve());
-							});
-						});
+						console.log(`Updates fetched for: ${label}`);
+						resolve(true);
 					});
 				});
 			});
 		});
 	});
+}
+
+/**
+ * installAndFix(label, cwd)
+ * npm installs a freshly pulled repo and fixes its permissions up, so they're in place
+ * before anything using it comes back up.
+ *
+ * @param {String} label    What to call this repo in the logs.
+ * @param {String} cwd      The repo's working directory.
+ */
+function installAndFix(label, cwd) {
+	return new Promise(resolve => {
+		exec('npm install', {cwd}, (npmError) => {
+			if (!!npmError) {
+				console.trace(`Error running npm install for process: ${label}`, npmError);
+			}
+
+			exec(`chmod -R 777 "${cwd}"`, {cwd}, () => resolve());
+		});
+	});
+}
+
+/**
+ * pullAndReload(name, cwd)
+ * Pulls a process's own repo and, if that changed anything, npm installs and restarts it.
+ * Resolves whether it restarted.
+ *
+ * @param {String} name    The pm2 process name.
+ * @param {String} cwd     The repo's working directory.
+ */
+async function pullAndReload(name, cwd) {
+	if (!await pullRepo(name, cwd)) {
+		return false;
+	}
+
+	await installAndFix(name, cwd);
+	await new Promise(resolve => pm2.restart(name, () => resolve()));
+
+	return true;
+}
+
+/**
+ * handleSharedLibs(handled)
+ * Pulls the shared libs folder and, if it moved, restarts everything else on the box.
+ *
+ * Nothing here can be driven off pm2's process list: the shared libs folder is required by
+ * relative path rather than being a dependency of anyone, and not every box runs a process
+ * out of it at all, so pm2 either never hands it to us or hands it to us as one placeholder
+ * process whose restart fixes nothing. Its sibling position next to the app checkouts is the
+ * only reliable way to find it.
+ *
+ * @param {Array} handled    The descriptors handleProcess resolved for this cycle.
+ */
+async function handleSharedLibs(handled) {
+
+	//Anything already back up on the new code, so we don't bounce it twice
+	const restarted = new Set(handled.filter(entry => entry.updated).map(entry => entry.name));
+
+	//Whoever owns the folder as their own checkout, if anyone does, has pulled it for us already
+	const pulled = handled.filter(entry => path.basename(entry.cwd) === SHARED_LIBS);
+	let changed = pulled.some(entry => entry.updated);
+
+	if (!pulled.length) {
+		const siblings = new Set(handled.map(entry => path.join(path.dirname(entry.cwd), SHARED_LIBS)));
+
+		for (const cwd of siblings) {
+			if (!fs.existsSync(path.join(cwd, '.git'))) {
+				continue;
+			}
+
+			if (await pullRepo(SHARED_LIBS, cwd)) {
+				await installAndFix(SHARED_LIBS, cwd);
+				changed = true;
+			}
+		}
+	}
+
+	if (!changed) {
+		return;
+	}
+
+	//One at a time, so a box full of apps doesn't all go down at the same moment
+	log(`${SHARED_LIBS} changed, restarting everything that requires it`, true);
+
+	for (const entry of handled) {
+		if (restarted.has(entry.name)) {
+			continue;
+		}
+
+		await new Promise(resolve => pm2.restart(entry.name, () => resolve()));
+		log(`Restarted for ${SHARED_LIBS}: ${entry.name}`, true);
+	}
 }
 
 /**
