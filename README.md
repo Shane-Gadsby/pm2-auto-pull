@@ -35,6 +35,16 @@ Once the module is installed and configured, it will automatically begin checkin
 > [!WARNING]  
 > This module will `git reset --hard` to the latest version (`HEAD`) from your configured git remote and will overwrite any local changes that have not been committed or stashed!
 
+## Shared library folders (`suite-libs`)
+
+This fork carries one behaviour upstream doesn't, for the StudyDesk Toolbox suite it runs on.
+
+Every app in that suite pulls its shared code in as `require('../suite-libs/...')`, by relative path, so `suite-libs` is nobody's npm dependency and pm2 has no process to tie it to. Left alone, a commit to it would be pulled (if a placeholder process happens to exist for it) or not pulled at all (if one doesn't), and either way every app would keep running the copy it loaded into memory at boot. The commit lands on disk and changes nothing.
+
+So on each cycle this module also looks for a `suite-libs` folder sitting beside the app checkouts, pulls and `npm install`s it like any other repo, and when it moves, restarts every git-backed process on the box one at a time. Processes that already restarted for their own commit that cycle aren't bounced twice.
+
+The practical consequence is that a `suite-libs` commit restarts everything, which is the whole point, but it does mean the blast radius of one bad commit there is the entire box.
+
 You can optionally enable verbose logging to see when an interval check is run along with an output of all processes that were checked, skipped, and updated:
 ```bash
 pm2 set @Shane-Gadsby/pm2-auto-pull:logging true
