@@ -33,7 +33,7 @@ A simple and efficient [PM2](https://pm2.keymetrics.io) module that automaticall
 Once the module is installed and configured, it will automatically begin checking for any updates for all **running processes** from their respective connected git version controls, any offline processes will be skipped.
 
 > [!WARNING]  
-> This module will `git reset --hard` to the latest version (`HEAD`) from your configured git remote and will overwrite any local changes that have not been committed or stashed!
+> When the remote has moved ahead of what's checked out, this module will `git reset --hard` onto it and will overwrite any local changes that have not been committed or stashed! It only does this for a repo whose upstream actually has new commits, so a checkout that's already up to date is left alone (the `git fetch` is the only thing that runs every cycle).
 
 ## Shared library folders (`suite-libs`)
 

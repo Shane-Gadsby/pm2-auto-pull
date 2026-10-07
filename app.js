@@ -133,65 +133,94 @@ function getGitRemote(cwd) {
 }
 
 /**
- * pullRepo(label, cwd)
- * Fetches and hard-resets a repo to its remote HEAD, and resolves whether that actually
- * moved it. Doesn't care what, if anything, is running out of the folder.
+ * run(command, cwd)
+ * Runs one command in a repo and resolves {error, stdout}, so the pull sequence can read
+ * like a sequence instead of a stack of callbacks.
  *
- * @param {String} label    What to call this repo in the logs.
- * @param {String} cwd      The repo's working directory.
+ * @param {String} command    The command to run.
+ * @param {String} cwd        The directory to run it in.
  */
-function pullRepo(label, cwd) {
+function run(command, cwd) {
 	return new Promise(resolve => {
-		exec('git rev-parse HEAD', {cwd}, (error, beforeRev) => {
-			exec('git fetch origin', {cwd}, (fetchError) => {
-
-				//Got an error that wasn't that it was already up to date?
-				if (!!fetchError) {
-					console.trace(`Error fetching updates for process: ${label}`, fetchError);
-					return resolve(false);
-				}
-
-				exec('git reset --hard @{u}', {cwd}, (resetError) => {
-					if (!!resetError) {
-						console.trace(`Error resetting process: ${label}`, resetError);
-						return resolve(false);
-					}
-
-					exec('git rev-parse HEAD', {cwd}, (error2, afterRev) => {
-
-						//Was it up to date already?
-						if (beforeRev?.trim() === afterRev?.trim()) {
-							console.log(`Already up to date: ${label}`);
-							return resolve(false);
-						}
-
-						console.log(`Updates fetched for: ${label}`);
-						resolve(true);
-					});
-				});
-			});
-		});
+		exec(command, {cwd}, (error, stdout) => resolve({error, stdout: (stdout || '').trim()}));
 	});
 }
 
 /**
- * installAndFix(label, cwd)
- * npm installs a freshly pulled repo and fixes its permissions up, so they're in place
- * before anything using it comes back up.
+ * pullRepo(label, cwd)
+ * Fetches a repo and, only if the remote has actually moved ahead of what's checked out,
+ * hard-resets onto it. Resolves whether it moved. Doesn't care what, if anything, is
+ * running out of the folder.
+ *
+ * The fetch is the only thing that runs unconditionally, everything destructive is behind
+ * the rev comparison, so a box that's already up to date never gets reset, npm installed
+ * or restarted. Which also means local edits survive until there's a real commit to take,
+ * rather than being wiped every 15 seconds.
  *
  * @param {String} label    What to call this repo in the logs.
  * @param {String} cwd      The repo's working directory.
  */
-function installAndFix(label, cwd) {
-	return new Promise(resolve => {
-		exec('npm install', {cwd}, (npmError) => {
-			if (!!npmError) {
-				console.trace(`Error running npm install for process: ${label}`, npmError);
-			}
+async function pullRepo(label, cwd) {
+	const fetched = await run('git fetch origin', cwd);
 
-			exec(`chmod -R 777 "${cwd}"`, {cwd}, () => resolve());
-		});
-	});
+	//Got an error that wasn't that it was already up to date?
+	if (!!fetched.error) {
+		console.trace(`Error fetching updates for process: ${label}`, fetched.error);
+		return false;
+	}
+
+	const before = await run('git rev-parse HEAD', cwd);
+	const upstream = await run('git rev-parse @{u}', cwd);
+
+	//No upstream tracking branch (detached head, or a branch that was never pushed), so
+	//there's nothing to reset onto and @{u} would just error out below
+	if (!!before.error || !!upstream.error || !before.stdout || !upstream.stdout) {
+		console.log(`[Skipping] No upstream to compare against: ${label} (${cwd})`);
+		return false;
+	}
+
+	//Was it up to date already?
+	if (before.stdout === upstream.stdout) {
+		log(`Already up to date: ${label}`);
+		return false;
+	}
+
+	const reset = await run('git reset --hard @{u}', cwd);
+	if (!!reset.error) {
+		console.trace(`Error resetting process: ${label}`, reset.error);
+		return false;
+	}
+
+	console.log(`Updates fetched for: ${label} (${before.stdout.slice(0, 7)} -> ${upstream.stdout.slice(0, 7)})`);
+	return true;
+}
+
+/**
+ * installAndFix(label, cwd)
+ * npm installs a freshly pulled repo, takes whatever audit fixes npm can apply on its own,
+ * and fixes its permissions up, so they're all in place before anything using it comes back
+ * up. Only ever called off the back of a pull that actually moved the checkout.
+ *
+ * Neither npm step is fatal, a repo that won't install cleanly still gets restarted on the
+ * new code rather than being left running the old.
+ *
+ * @param {String} label    What to call this repo in the logs.
+ * @param {String} cwd      The repo's working directory.
+ */
+async function installAndFix(label, cwd) {
+	const installed = await run('npm install', cwd);
+	if (!!installed.error) {
+		console.trace(`Error running npm install for process: ${label}`, installed.error);
+	}
+
+	const audited = await run('npm audit fix', cwd);
+	if (!!audited.error) {
+		//npm audit fix exits non-zero whenever anything's left unfixable, which is most of
+		//the time, so this is a note rather than a problem
+		log(`npm audit fix left findings for: ${label}`);
+	}
+
+	await run(`chmod -R 777 "${cwd}"`, cwd);
 }
 
 /**
